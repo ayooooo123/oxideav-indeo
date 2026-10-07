@@ -111,6 +111,9 @@ pub struct Indeo5RegistryDecoder {
     codec_id: CodecId,
     inner: Indeo5Decoder,
     pending: Option<Packet>,
+    /// Luma size of the frame `receive_frame` last returned (frames are
+    /// decoded there, so none is known before it).
+    last_output: Option<(u32, u32)>,
     eof: bool,
 }
 
@@ -121,6 +124,7 @@ impl Indeo5RegistryDecoder {
             codec_id,
             inner: Indeo5Decoder::new(),
             pending: None,
+            last_output: None,
             eof: false,
         }
     }
@@ -241,7 +245,18 @@ impl Decoder for Indeo5RegistryDecoder {
             };
         };
         let out = self.inner.decode(&pkt.data).map_err(map_session_error)?;
-        Ok(Frame::Video(session_output_to_video_frame(&out, pkt.pts)?))
+        let frame = session_output_to_video_frame(&out, pkt.pts)?;
+        self.last_output = Some(out.dimensions);
+        Ok(Frame::Video(frame))
+    }
+
+    fn output_video_dimensions(&self) -> Option<(u32, u32)> {
+        self.last_output
+    }
+
+    /// Chroma is upsampled to luma resolution (`spec/08 §3.5`).
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.last_output.map(|_| PixelFormat::Yuv444P)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -255,6 +270,7 @@ impl Decoder for Indeo5RegistryDecoder {
         // decodes as a fresh INTRA frame (the `spec/01 §3.2` first-frame
         // gate).
         self.pending = None;
+        self.last_output = None;
         self.eof = false;
         self.inner = Indeo5Decoder::new();
         Ok(())

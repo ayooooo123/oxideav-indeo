@@ -121,6 +121,9 @@ pub struct Indeo3RegistryDecoder {
     codec_id: CodecId,
     inner: Indeo3PictureDecoder,
     pending: Option<Packet>,
+    /// Luma size of the frame `receive_frame` last returned (frames are
+    /// decoded there, so none is known before it).
+    last_output: Option<(u32, u32)>,
     eof: bool,
 }
 
@@ -131,6 +134,7 @@ impl Indeo3RegistryDecoder {
             codec_id,
             inner: Indeo3PictureDecoder::new(),
             pending: None,
+            last_output: None,
             eof: false,
         }
     }
@@ -209,8 +213,29 @@ impl Decoder for Indeo3RegistryDecoder {
                 Err(Error::NeedMore)
             };
         };
-        let out = self.inner.decode(&pkt.data).map_err(map_decoder_error)?;
-        Ok(Frame::Video(picture_to_video_frame(&out, pkt.pts)))
+        let out = match self.inner.decode(&pkt.data) {
+            // A new picture size starts a new sequence (FFmpeg reallocates
+            // its frame buffers): restart the session, so the frame decodes
+            // as its first, INTRA frame (spec/01 §3.2).
+            Err(PictureDecodeError::SizeChanged { .. }) => {
+                self.inner = Indeo3PictureDecoder::new();
+                self.inner.decode(&pkt.data)
+            }
+            decoded => decoded,
+        }
+        .map_err(map_decoder_error)?;
+        let frame = picture_to_video_frame(&out, pkt.pts);
+        self.last_output = Some((out.width, out.height));
+        Ok(Frame::Video(frame))
+    }
+
+    fn output_video_dimensions(&self) -> Option<(u32, u32)> {
+        self.last_output
+    }
+
+    /// Chroma is replicated to luma resolution (`spec/07 §5.5`).
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.last_output.map(|_| PixelFormat::Yuv444P)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -224,6 +249,7 @@ impl Decoder for Indeo3RegistryDecoder {
         // packet decodes as a fresh INTRA frame (the session's
         // first-frame / seek INTRA gate, spec/01 §3.2 / §4).
         self.pending = None;
+        self.last_output = None;
         self.eof = false;
         self.inner = Indeo3PictureDecoder::new();
         Ok(())

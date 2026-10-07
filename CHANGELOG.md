@@ -8,6 +8,13 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Decoder::output_video_dimensions` / `output_pixel_format` on the
+  Indeo 3 and Indeo 5 registry decoders: the luma size of the frame
+  `receive_frame` last returned, `Yuv444P`.
+- The Indeo 3 registry decoder accepts a new picture size mid-stream: it
+  restarts the session so the frame decodes as the first of a new
+  sequence, where it used to fail with "picture size changed".
+
 - **Fuzz targets + three hostile-input fixes** (r459, `fuzz/`,
   `.github/workflows/fuzz.yml`): `indeo5_intra` (one-shot INTRA),
   `indeo5_session` (frame sequences through `Indeo5Decoder`) and
