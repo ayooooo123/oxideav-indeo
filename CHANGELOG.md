@@ -6,6 +6,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed (PearTube fork)
+
+- The Indeo 3 registry decoder emits native 4:1:0 (`PixelFormat::Yuv410P`,
+  from the PearTube oxideav-core fork) instead of chroma box-upsampled to
+  `Yuv444P`, as FFmpeg 2da55bf's `indeo3.c` outputs `yuv410p`: chroma
+  planes of `ceil(width / 4) × ceil(height / 4)`. Every frame of FATE
+  `iv32/OPENINGH.avi` (100) and `iv32/cubes.mov` (40) now equals
+  FFmpeg's. `DecodedPicture::to_yuv444_planes`, used only by the old
+  output, is removed. The crate builds against the PearTube oxideav-core
+  fork (`[patch.crates-io]`). Indeo 5 still emits `Yuv444P`.
+
 ### Added
 
 - `Decoder::output_video_dimensions` / `output_pixel_format` on the

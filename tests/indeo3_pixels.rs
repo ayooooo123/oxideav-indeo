@@ -86,7 +86,7 @@ fn inter_frames_reference_the_other_bank() {
 }
 
 #[test]
-fn registry_decoder_emits_pixel_exact_yuv444_frames() {
+fn registry_decoder_emits_pixel_exact_yuv410_frames() {
     let mut dec = Indeo3RegistryDecoder::new(CodecId::new("indeo3"));
     let (w, h) = (160usize, 120usize);
     for (fi, frame) in frames(INTRA_BIN, INTRA_IDX).iter().enumerate() {
@@ -101,14 +101,13 @@ fn registry_decoder_emits_pixel_exact_yuv444_frames() {
         assert_eq!(vf.planes.len(), 3);
         let (y, u, v) = reference(INTRA_YUV, fi, w, h);
         assert_eq!(vf.planes[0].data, y, "frame {fi} luma");
-        // Chroma is box-replicated 4x4 (spec/07 §5.5).
-        for (plane, r) in [(&vf.planes[1], u), (&vf.planes[2], v)] {
-            assert_eq!(plane.stride, w);
-            for yy in 0..h {
-                for xx in 0..w {
-                    assert_eq!(plane.data[yy * w + xx], r[(yy / 4) * (w / 4) + xx / 4]);
-                }
-            }
+        // Chroma is native 4:1:0, as FFmpeg's yuv410p.
+        for (i, (plane, r)) in [(&vf.planes[1], u), (&vf.planes[2], v)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(plane.stride, w / 4);
+            assert_eq!(plane.data, r, "frame {fi} chroma plane {}", i + 1);
         }
     }
     // The one-shot direct API decodes the first frame identically.

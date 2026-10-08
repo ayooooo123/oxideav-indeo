@@ -16,3 +16,9 @@ exclude = ["/tests", "/fuzz"]
 
 [dependencies]
 oxideav-core = "0.1"
+
+# PearTube fork: build and test against the PearTube oxideav-core fork the
+# player uses (`PixelFormat::Yuv410P`, `Decoder::output_video_dimensions` /
+# `output_pixel_format`), at the revision the player pins.
+[patch.crates-io]
+oxideav-core = { git = "https://github.com/ayooooo123/oxideav-core", rev = "9a314bf862480d019dc1133847ff6262d14ba628" }

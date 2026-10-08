@@ -26,9 +26,8 @@
 //! * [`Indeo3RegistryDecoder`] implements [`Decoder`]: it owns an
 //!   [`Indeo3PictureDecoder`], feeds each [`Packet`]'s bytes through
 //!   [`Indeo3PictureDecoder::decode`], and maps the resulting
-//!   [`DecodedPicture`] (luma plus `spec/07 §5.5` box-upsampled chroma)
-//!   into an [`oxideav_core::VideoFrame`] in [`PixelFormat::Yuv444P`]
-//!   plane order (Y, U, V).
+//!   [`DecodedPicture`] into an [`oxideav_core::VideoFrame`] in
+//!   [`PixelFormat::Yuv410P`] plane order (Y, U, V).
 //! * [`make_decoder`] is the [`oxideav_core::registry::codec::DecoderFactory`]
 //!   the registry calls; [`register_codecs`] / [`register`] install the
 //!   codec (id + caps + factory + FourCC tags) into a
@@ -39,15 +38,11 @@
 //! ## Output pixel format
 //!
 //! Indeo 3 is natively 4:1:0 (YVU9): luma at full resolution, chroma
-//! subsampled 4×4. [`DecodedPicture::to_yuv444_planes`] box-upsamples
-//! (`spec/07 §5.5`) both chroma planes to full luma resolution,
-//! producing the three-plane surface the `spec/07 §5.4` YUV→RGB matrix
-//! consumes. That surface is exactly
-//! [`PixelFormat::Yuv444P`]-shaped (three equal-size 8-bit planes), so
-//! the registry decoder emits `Yuv444P` rather than inventing a 4:1:0
-//! format the framework does not carry. The chroma is genuine 4:1:0
-//! data lifted to 4:4:4 geometry; no chroma detail is fabricated beyond
-//! the spec's own box filter.
+//! subsampled 4×4. The registry decoder emits it as is, in
+//! [`PixelFormat::Yuv410P`], as FFmpeg's `indeo3.c` outputs `yuv410p`:
+//! chroma planes of `ceil(width / 4) × ceil(height / 4)` samples, cut
+//! from the decoded chroma planes (FFmpeg copies `(height + 3) >> 2`
+//! rows of them).
 //!
 //! ## Scope
 //!
@@ -115,7 +110,7 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
 /// Holds the multi-frame session (so NULL / repeat frames re-emit the
 /// previous output per `spec/07 §6.3`) and a single-packet pending
 /// slot. `send_packet` stashes the packet; `receive_frame` decodes it,
-/// shapes the [`DecodedPicture`] into a [`PixelFormat::Yuv444P`]
+/// shapes the [`DecodedPicture`] into a [`PixelFormat::Yuv410P`]
 /// [`VideoFrame`], and returns it.
 pub struct Indeo3RegistryDecoder {
     codec_id: CodecId,
@@ -152,23 +147,41 @@ fn map_decoder_error(e: PictureDecodeError) -> Error {
 }
 
 /// Shape a [`DecodedPicture`] into an [`oxideav_core`] [`VideoFrame`] in
-/// [`PixelFormat::Yuv444P`] plane order (Y, U, V): luma as decoded,
-/// each chroma plane box-replicated 4×4 to luma resolution
-/// (`spec/07 §5.5`), every plane with stride == width.
+/// [`PixelFormat::Yuv410P`] plane order (Y, U, V): luma as decoded, each
+/// chroma plane cut to `ceil(width / 4) × ceil(height / 4)`, every plane
+/// with stride == its width.
 fn picture_to_video_frame(pic: &DecodedPicture, pts: Option<i64>) -> VideoFrame {
-    let planes = pic
-        .to_yuv444_planes()
-        .into_iter()
-        .map(|data| VideoPlane {
+    let (cw, ch) = (pic.width.div_ceil(4), pic.height.div_ceil(4));
+    let cut = |c: &[u8]| -> Vec<u8> {
+        let mut out = Vec::with_capacity((cw * ch) as usize);
+        for y in 0..ch {
+            let sy = y.min(pic.chroma_height.saturating_sub(1));
+            for x in 0..cw {
+                let sx = x.min(pic.chroma_width.saturating_sub(1));
+                out.push(c[(sy * pic.chroma_width + sx) as usize]);
+            }
+        }
+        out
+    };
+    let planes = vec![
+        VideoPlane {
             stride: pic.width as usize,
-            data,
-        })
-        .collect();
+            data: pic.luma.clone(),
+        },
+        VideoPlane {
+            stride: cw as usize,
+            data: cut(&pic.chroma_u),
+        },
+        VideoPlane {
+            stride: cw as usize,
+            data: cut(&pic.chroma_v),
+        },
+    ];
     VideoFrame { pts, planes }
 }
 
 /// One-shot direct decode: decode a single Indeo 3 codec frame's bytes
-/// into an [`oxideav_core`] [`VideoFrame`] in [`PixelFormat::Yuv444P`]
+/// into an [`oxideav_core`] [`VideoFrame`] in [`PixelFormat::Yuv410P`]
 /// (Y, U, V) without managing a [`Decoder`] state machine.
 ///
 /// This is the direct-API counterpart to the registry path, mirroring
@@ -233,9 +246,9 @@ impl Decoder for Indeo3RegistryDecoder {
         self.last_output
     }
 
-    /// Chroma is replicated to luma resolution (`spec/07 §5.5`).
+    /// Native 4:1:0, as FFmpeg's `yuv410p`.
     fn output_pixel_format(&self) -> Option<PixelFormat> {
-        self.last_output.map(|_| PixelFormat::Yuv444P)
+        self.last_output.map(|_| PixelFormat::Yuv410P)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -319,8 +332,8 @@ pub fn probe(ctx: &ProbeContext) -> f32 {
 /// the two FourCC tags) into a [`CodecRegistry`].
 ///
 /// The capabilities advertise the lossy video codec emitting
-/// [`PixelFormat::Yuv444P`] (the full-luma-resolution surface the
-/// registry decoder produces). The `IV31` / `IV32` tags let the
+/// [`PixelFormat::Yuv410P`] (native 4:1:0, as FFmpeg outputs it). The
+/// `IV31` / `IV32` tags let the
 /// container's `CodecResolver` route either FourCC here, and the
 /// [`probe`] validates a first packet's combined-header `check_sum`
 /// (`spec/01 §2.1`) to out-rank a colliding claimant on genuine Indeo 3
@@ -331,7 +344,7 @@ pub fn probe(ctx: &ProbeContext) -> f32 {
 pub fn register_codecs(reg: &mut CodecRegistry) {
     let caps = CodecCapabilities::video("indeo3_sw")
         .with_lossy(true)
-        .with_pixel_format(PixelFormat::Yuv444P);
+        .with_pixel_format(PixelFormat::Yuv410P);
     reg.register(
         CodecInfo::new(CodecId::new(CODEC_ID_STR))
             .capabilities(caps)
@@ -616,7 +629,7 @@ mod tests {
     #[test]
     fn decode_video_frame_one_shot_intra() {
         // An all-planes-skipped INTRA frame decodes through the one-shot
-        // path to a Yuv444P VideoFrame whose planes keep the untouched
+        // path to a Yuv410P VideoFrame whose planes keep the untouched
         // (zero) bank content, with the supplied pts.
         let vf = decode_video_frame(&skipped_intra_frame(0), Some(42)).expect("one-shot decode");
         assert_eq!(vf.planes.len(), 3);
@@ -639,8 +652,8 @@ mod tests {
 
     #[test]
     fn picture_to_video_frame_orders_planes_y_u_v() {
-        // A 4x4 picture with 1x1 chroma: plane 0 = Y, 1 = U (box-replicated),
-        // 2 = V, every plane full luma resolution.
+        // A 4x4 picture with 1x1 chroma: plane 0 = Y (4x4), 1 = U and
+        // 2 = V (1x1 each, the 4:1:0 size).
         let pic = DecodedPicture {
             width: 4,
             height: 4,
@@ -662,6 +675,6 @@ mod tests {
         assert!(vf.planes[1].data.iter().all(|&b| b == 0x20));
         assert!(vf.planes[2].data.iter().all(|&b| b == 0x30));
         assert_eq!(vf.planes[0].stride, 4);
-        assert_eq!(vf.planes[1].data.len(), 16);
+        assert_eq!((vf.planes[1].stride, vf.planes[1].data.len()), (1, 1));
     }
 }

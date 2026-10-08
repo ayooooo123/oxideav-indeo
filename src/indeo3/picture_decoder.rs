@@ -139,26 +139,6 @@ pub struct DecodedPicture {
     pub stats: Option<[PlaneStats; 3]>,
 }
 
-impl DecodedPicture {
-    /// The picture as three full-luma-resolution planes `(Y, U, V)` —
-    /// chroma box-replicated 4×4 (`spec/07 §5.5`), the `Yuv444P` shape
-    /// the registry bridge emits.
-    pub fn to_yuv444_planes(&self) -> [Vec<u8>; 3] {
-        let up = |c: &[u8]| -> Vec<u8> {
-            let mut out = Vec::with_capacity((self.width * self.height) as usize);
-            for y in 0..self.height {
-                let cy = (y / 4).min(self.chroma_height.saturating_sub(1));
-                for x in 0..self.width {
-                    let cx = (x / 4).min(self.chroma_width.saturating_sub(1));
-                    out.push(c[(cy * self.chroma_width + cx) as usize]);
-                }
-            }
-            out
-        };
-        [self.luma.clone(), up(&self.chroma_u), up(&self.chroma_v)]
-    }
-}
-
 /// The stateful Indeo 3 decoder: codec-init tables, the per-frame
 /// arena, the two reference banks and the last emitted picture.
 pub struct Indeo3PictureDecoder {

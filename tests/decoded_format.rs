@@ -4,7 +4,8 @@
 //! next. Frames are decoded in `receive_frame`, so nothing is known
 //! before the first one.
 //!
-//! Both decoders emit `Yuv444P` (chroma replicated to luma resolution).
+//! Indeo 3 emits native 4:1:0 (`Yuv410P`, FFmpeg's `yuv410p`); Indeo 5
+//! emits `Yuv444P` (chroma replicated to luma resolution).
 
 use oxideav_core::{CodecId, Decoder, Frame, Packet, PixelFormat, TimeBase};
 use oxideav_indeo::{indeo3, indeo5};
@@ -21,8 +22,9 @@ fn iv32_frames(bin: &[u8], idx: &str) -> Vec<Vec<u8>> {
 }
 
 /// Feeds every packet, receiving after each, and checks the report and
-/// the planes of each returned frame against the packet's size.
-fn check(dec: &mut dyn Decoder, packets: Vec<(Vec<u8>, (u32, u32))>) {
+/// the planes of each returned frame against the packet's size, in
+/// `format`.
+fn check(dec: &mut dyn Decoder, format: PixelFormat, packets: Vec<(Vec<u8>, (u32, u32))>) {
     let mut last: Option<(u32, u32)> = None;
     for (at, (data, (w, h))) in packets.into_iter().enumerate() {
         dec.send_packet(&Packet::new(0, TimeBase::new(1, 25), data))
@@ -39,18 +41,15 @@ fn check(dec: &mut dyn Decoder, packets: Vec<(Vec<u8>, (u32, u32))>) {
             other => panic!("frame {at}: {other:?}"),
         };
         assert_eq!(dec.output_video_dimensions(), Some((w, h)), "frame {at}");
-        assert_eq!(
-            dec.output_pixel_format(),
-            Some(PixelFormat::Yuv444P),
-            "frame {at}"
-        );
+        assert_eq!(dec.output_pixel_format(), Some(format), "frame {at}");
         let planes = frame.image_planes();
         assert_eq!(planes.len(), 3, "frame {at}: planes");
         for (i, plane) in planes.iter().enumerate() {
-            assert_eq!(plane.stride, w as usize, "frame {at}: plane {i} stride");
+            let (pw, ph) = format.plane_dimensions(i, w, h).unwrap();
+            assert_eq!(plane.stride, pw as usize, "frame {at}: plane {i} stride");
             assert_eq!(
                 plane.data.len(),
-                (w * h) as usize,
+                (pw * ph) as usize,
                 "frame {at}: plane {i} rows"
             );
         }
@@ -76,7 +75,7 @@ fn indeo3_reports_each_frames_size() {
         .chain(large.into_iter().take(3).map(|f| (f, (176, 144))))
         .collect();
     let mut dec = indeo3::Indeo3RegistryDecoder::new(CodecId::new(indeo3::CODEC_ID_STR));
-    check(&mut dec, packets);
+    check(&mut dec, PixelFormat::Yuv410P, packets);
 }
 
 #[test]
@@ -92,5 +91,5 @@ fn indeo5_reports_each_frames_size() {
         ),
     ];
     let mut dec = indeo5::Indeo5RegistryDecoder::new(CodecId::new(indeo5::CODEC_ID_STR));
-    check(&mut dec, packets);
+    check(&mut dec, PixelFormat::Yuv444P, packets);
 }
